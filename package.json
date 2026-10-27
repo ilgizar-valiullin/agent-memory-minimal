@@ -1,0 +1,33 @@
+{
+  "name": "agent-memory-minimal",
+  "version": "0.2.0",
+  "description": "Minimal local MCP memory server: write, search, list. SQLite + FTS5 + sqlite-vec, stdio, no ports.",
+  "type": "module",
+  "main": "dist/watcher.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ilgizar-valiullin/agent-memory-minimal.git"
+  },
+  "author": "Ilgiz Valiullin",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "start": "node --jitless --optimize-for-size --max-old-space-size=64 dist/watcher.js",
+    "bootstrap": "node scripts/bootstrap.mjs",
+    "migrate": "node scripts/migrate.mjs",
+    "test:stdio": "node scripts/test-stdio.mjs"
+  },
+  "dependencies": {
+    "@xenova/transformers": "2.17.2",
+    "better-sqlite3": "^13.0.3",
+    "sqlite-vec": "^0.1.9"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
