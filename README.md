@@ -1,35 +1,35 @@
 # agent-memory-minimal
 
-Минимальный локальный MCP-сервер памяти для кодовых агентов (OpenCode, Claude Code и др.). Три тула, без демонов, портов и секретов — только MCP stdio, SQLite и локальные эмбеддинги.
+Minimal local MCP memory server for coding agents (OpenCode, Claude Code, etc.). Three tools, no daemons, ports, or secrets — just MCP stdio, SQLite, and local embeddings.
 
-- `memory_write` — записать один факт (title, content, tags `namespace:value`).
-- `memory_search` — гибридный поиск (keyword FTS5 + векторный, мультиязычный).
-- `memory_list` — последние записи, фильтр по тегам. Дешёвый вызов: модель не грузится.
+- `memory_write` — store a single fact (title, content, tags as `namespace:value`).
+- `memory_search` — hybrid search (keyword FTS5 + vector, multilingual).
+- `memory_list` — recent entries, filtered by tags. Cheap call: the model is not loaded.
 
-Холодный вотчер — **~19MB приватной памяти** (WS ~52MB, остальное — shared). Воркер эмбеддингов живёт только на время запроса, пик — один на машину.
+Cold watcher — **~19MB private memory** (WS ~52MB, the rest is shared). The embedding worker lives only for the duration of a request, with at most one peak worker per machine.
 
-## Зачем
+## Why
 
-Полновесные мемори-серверы дают десятки тулов: захваты сессий, консолидации, replay, timeline, governance, вьюверы и движки на отдельных портах. Для рабочего воркспейса реально используются две операции:
+Full-featured memory servers ship dozens of tools: session captures, consolidations, replay, timelines, governance, viewers, and engines on separate ports. For a working workspace only two operations are actually used:
 
-- Startup sync — узкий recall правил, активных задач и решений (`Workspace_Global_Rules`, `Active_Tasks`, `Dataset_Decision_*`).
-- Write — один ценный факт с префиксом проекта.
+- Startup sync — narrow recall of rules, active tasks, and decisions (`Workspace_Global_Rules`, `Active_Tasks`, `Dataset_Decision_*`).
+- Write — one valuable fact with a project prefix.
 
-Лишние тулы — это токены в системном промпте на каждое сообщение, риск вызова не того поиска и поверхность поломок при апгрейде. Здесь тулсет зафиксирован тремя инструментами с жёстким контрактом: одна запись — один факт, теги строго `namespace:value`, решения — `Dataset_Decision_*` с полями SCOPE/RULE/SOURCES/RATIONALE/SUPERSEDES/DATE.
+Extra tools cost tokens in the system prompt on every message, risk calling the wrong search, and add breakage surface on upgrade. Here the toolset is fixed at three tools with a strict contract: one record — one fact, tags strictly `namespace:value`, decisions as `Dataset_Decision_*` with SCOPE/RULE/SOURCES/RATIONALE/SUPERSEDES/DATE fields.
 
-## Установка
+## Installation
 
-Требования: Node 20+.
+Requirements: Node 20+.
 
 ```bash
 git clone https://github.com/ilgizar-valiullin/agent-memory-minimal.git
 cd agent-memory-minimal
 npm install
 npm run build
-npm run bootstrap   # разовый прогрев кэша модели (~152MB), дальше офлайн
+npm run bootstrap   # one-time model cache warmup (~152MB), then offline
 ```
 
-## Подключение
+## Setup
 
 OpenCode (`opencode.json`):
 
@@ -45,70 +45,70 @@ OpenCode (`opencode.json`):
 }
 ```
 
-Любой MCP-клиент с транспортом stdio: команда выше, рабочая директория не важна, все пути — через env/APPDATA.
+Any MCP client with stdio transport: use the command above, working directory does not matter, all paths go through env/APPDATA.
 
-Переменные окружения:
+Environment variables:
 
-| Переменная | Дефолт | Назначение |
+| Variable | Default | Purpose |
 |---|---|---|
-| `AGENT_MEMORY_DIR` | `%APPDATA%/agent-memory-minimal` (win), `~/Library/Application Support/...` (mac), `~/.local/share/...` (linux) | Корень данных |
-| `AGENT_MEMORY_DB` | `<DIR>/memory.sqlite` | Файл БД |
-| `AGENT_MEMORY_MODEL_CACHE` | `<DIR>/models` | Кэш модели |
-| `AGENT_MEMORY_MODEL` | `Xenova/multilingual-e5-small` | Модель эмбеддингов |
-| `AGENT_MEMORY_IDLE_TIMEOUT_MS` | `0` | 0 — убивать воркер сразу после использования; >0 — держать тёплым |
-| `AGENT_MEMORY_HOT_IDLE_TIMEOUT_MS` | `0` | То же для hot-бэкенда |
-| `AGENT_MEMORY_SLOT_TIMEOUT_MS` | `30000` | Ожидание межпроцессного слота эмбеддингов |
+| `AGENT_MEMORY_DIR` | `%APPDATA%/agent-memory-minimal` (win), `~/Library/Application Support/...` (mac), `~/.local/share/...` (linux) | Data root |
+| `AGENT_MEMORY_DB` | `<DIR>/memory.sqlite` | Database file |
+| `AGENT_MEMORY_MODEL_CACHE` | `<DIR>/models` | Model cache |
+| `AGENT_MEMORY_MODEL` | `Xenova/multilingual-e5-small` | Embedding model |
+| `AGENT_MEMORY_IDLE_TIMEOUT_MS` | `0` | 0 — kill the worker right after use; >0 — keep it warm |
+| `AGENT_MEMORY_HOT_IDLE_TIMEOUT_MS` | `0` | Same for the hot backend |
+| `AGENT_MEMORY_SLOT_TIMEOUT_MS` | `30000` | Wait time for the inter-process embedding slot |
 
-## Архитектура
+## Architecture
 
-Три процесса, каждый живёт только пока нужен:
+Three processes, each living only while needed:
 
 ```text
 OpenCode (stdio, newline-JSON)
   |
   v
-watcher.js — zero-dep фасад (~19MB private), ждёт команду.
-  Отвечает сам: initialize / tools/list / ping.
-  Первый tools/call поднимает hot.js и проксирует.
+watcher.js — zero-dep facade (~19MB private), waits for a command.
+  Answers itself: initialize / tools/list / ping.
+  The first tools/call spins up hot.js and proxies to it.
   |
   v
-hot.js — вся логика (~60/45MB transient, 0 в простое):
-  SQLite (WAL) + FTS5 + sqlite-vec vec0 + валидация + RRF-слияние.
-  Умирает, когда нет активных вызовов.
+hot.js — all logic (~60/45MB transient, 0 when idle):
+  SQLite (WAL) + FTS5 + sqlite-vec vec0 + validation + RRF fusion.
+  Exits when there are no active calls.
   |
-  v (только на время embed)
-embed-worker.js — @xenova/transformers, e5-small, префиксы
-  passage:/query:. ~740MB transient. Межпроцессный мьютекс
-  (embed.lock, O_EXCL): пик — 1 воркер на машину.
+  v (only for the duration of embedding)
+embed-worker.js — @xenova/transformers, e5-small, prefixes
+  passage:/query:. ~740MB transient. Inter-process mutex
+  (embed.lock, O_EXCL): peak — 1 worker per machine.
 ```
 
-Почему не Qdrant/Milvus/pgvector: им нужен Docker/Postgres/кластер. Для трёх тулов это лишний опс. SQLite-файл покрывает WAL-параллельность нескольких инстансов (проверено: 2 процесса × 30 конкурентных записей — 60/60, `integrity_check: ok`).
+Why not Qdrant/Milvus/pgvector: they need Docker/Postgres/a cluster. For three tools that is extra ops. A SQLite file covers WAL parallelism of several instances (verified: 2 processes × 30 concurrent writes — 60/60, `integrity_check: ok`).
 
-Почему `multilingual-e5-small` (384 dim, как и было): заметно лучше русской выборки, чем MiniLM (замерено A/B на живых запросах), английский не проседает. Цена — таблица эмбеддингов XLM-R (~250k токенов): ~740MB transient вместо ~176MB у MiniLM. При политике «убить сразу после использования» это только пик на время запроса.
+Why `multilingual-e5-small` (384 dim, as before): noticeably better Russian retrieval than MiniLM (measured A/B on live queries), English does not regress. The cost is the XLM-R embedding table (~250k tokens): ~740MB transient instead of ~176MB for MiniLM. With the "kill right after use" policy this is only a peak during the request.
 
-## Замеры (Windows, NVMe)
+## Benchmarks (Windows, NVMe)
 
-- Холодный вотчер: WS 52MB / Private 19MB (bare node 53/20 — вотчер почти у пола).
-- `tools/list`: ~110мс, ничего не спавнит.
-- Холодный поиск: ~0.8–2.5с (подъём hot + воркера + инференс).
-- 2 вотчера × одновременный холодный поиск: оба топ-1, пик воркеров 1, через 3с — 0 процессов.
-- Параллельная запись: 60/60 без `SQLITE_BUSY` наружу.
+- Cold watcher: WS 52MB / Private 19MB (bare node 53/20 — the watcher is near the floor).
+- `tools/list`: ~110ms, spawns nothing.
+- Cold search: ~0.8–2.5s (hot + worker spin-up + inference).
+- 2 watchers × simultaneous cold search: both top-1, worker peak 1, 0 processes after 3s.
+- Parallel writes: 60/60 with no `SQLITE_BUSY` leaking out.
 
-## Миграция со старого бэкенда
+## Migration from the old backend
 
 ```bash
-# 1. Снять экспорт старого сервера в export.json (массив {title, content, tags})
+# 1. Export the old server to export.json (array of {title, content, tags})
 node scripts/migrate.mjs export.json --dry-run
 node scripts/migrate.mjs export.json
 ```
 
-Скрипт переносит записи, валидирует контракт (пустые отбрасывает со счётчиком) и пишет через `memory_write`, чтобы вектора посчитались новой моделью.
+The script migrates records, validates the contract (drops empty ones with a counter), and writes via `memory_write` so vectors are recomputed with the new model.
 
-## Разработка
+## Development
 
 ```bash
 npm run build        # tsc -> dist/
-npm run test:stdio   # write -> search -> list через stdio
+npm run test:stdio   # write -> search -> list over stdio
 ```
 
 ## Donations / Support the Project
